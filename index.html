@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikTok Video Downloader (No Watermark)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #ff0050;
+            text-align: center;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #ff0050;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #e00046;
+        }
+        .result {
+            margin-top: 20px;
+            display: none;
+        }
+        .video-container {
+            margin-top: 20px;
+            text-align: center;
+        }
+        video {
+            max-width: 100%;
+            border-radius: 5px;
+        }
+        .download-btn {
+            display: inline-block;
+            margin-top: 15px;
+            text-decoration: none;
+            color: white;
+            background-color: #25D366;
+            padding: 10px 15px;
+            border-radius: 5px;
+        }
+        .download-btn:hover {
+            background-color: #1da851;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #ff0050;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .rate-limit-notice {
+            color: #ff9800;
+            margin-top: 10px;
+            text-align: center;
+            font-size: 14px;
+        }
+        .ip-limit-message {
+            color: #ff0000;
+            margin-top: 15px;
+            text-align: center;
+            font-weight: bold;
+            padding: 10px;
+            background-color: #ffeeee;
+            border-radius: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TikTok Video Downloader</h1>
+        <p>Download TikTok videos without watermark by pasting the link below:</p>
+        
+        <input type="text" id="tiktok-url" placeholder="Paste TikTok video URL here...">
+        <button onclick="processVideo()">Get Video (No Watermark)</button>
+        
+        <div id="loading" class="loading">
+            <div class="loading-spinner"></div>
+            <p>Processing video...</p>
+        </div>
+        
+        <div id="error" class="error"></div>
+        
+        <div id="result" class="result">
+            <div class="video-container">
+                <video id="video-preview" controls></video>
+                <br>
+                <a id="download-link" class="download-btn" href="#" download>Download Video</a>
+            </div>
+        </div>
+        
+        <div id="rate-limit-notice" class="rate-limit-notice" style="display: none;">
+            Note: To avoid API limits, please wait a few seconds between requests
+        </div>
+        
+        <div id="ip-limit-message" class="ip-limit-message"></div>
+    </div>
+
+    <script>
+        // ================== ENHANCED RATE LIMITING SYSTEM ==================
+        const rateLimitManager = {
+            ipLimits: {},
+            maxRequestsPerIP: 15,
+            ipWindowHours: 1,
+            
+            apiEndpoints: [
+                {
+                    name: "ssstik",
+                    url: (tiktokUrl) => `https://ssstik.io/api?url=${encodeURIComponent(tiktokUrl)}`,
+                    parser: (data) => data.video?.noWatermark ? { 
+                        url: data.video.noWatermark, 
+                        title: data.desc || 'tiktok-video' 
+                    } : null
+                },
+                {
+                    name: "tikwm",
+                    url: (tiktokUrl) => `https://tikwm.com/api/?url=${encodeURIComponent(tiktokUrl)}`,
+                    parser: (data) => data.code === 0 && data.data?.play ? { 
+                        url: data.data.play, 
+                        title: data.data.title || 'tiktok-video' 
+                    } : null
+                },
+                {
+                    name: "tikmate",
+                    url: (tiktokUrl) => `https://api.tikmate.app/api/lookup?url=${encodeURIComponent(tiktokUrl)}`,
+                    parser: (data) => data.success && data.video_url ? { 
+                        url: data.video_url, 
+                        title: data.author_name || 'tiktok-video' 
+                    } : null
+                },
+                {
+                    name: "tikdown",
+                    url: (tiktokUrl) => `https://tikdown.org/get?url=${encodeURIComponent(tiktokUrl)}`,
+                    parser: (data) => data.status === 'success' && data.video ? { 
+                        url: data.video, 
+                        title: data.title || 'tiktok-video' 
+                    } : null
+                }
+            ],
+            currentApiIndex: 0,
+            apiCooldowns: {},
+            
+            getClientIP() {
+                return 'user-' + Math.floor(Math.random() * 1000000);
+            },
+            
+            checkIPLimit(ip) {
+                const now = Date.now();
+                const windowMs = this.ipWindowHours * 60 * 60 * 1000;
+                
+                if (!this.ipLimits[ip]) {
+                    this.ipLimits[ip] = { count: 1, firstRequest: now };
+                    return false;
+                }
+                
+                const ipData = this.ipLimits[ip];
+                
+                if (now - ipData.firstRequest > windowMs) {
+                    ipData.count = 1;
+                    ipData.firstRequest = now;
+                    return false;
+                }
+                
+                ipData.count++;
+                
+                if (ipData.count > this.maxRequestsPerIP) {
+                    const resetTime = new Date(ipData.firstRequest + windowMs);
+                    return resetTime;
+                }
+                
+                return false;
+            },
+            
+            async getNextAPI(tiktokUrl) {
+                const now = Date.now();
+                let attempts = 0;
+                
+                while (attempts < this.apiEndpoints.length * 2) {
+                    const api = this.apiEndpoints[this.currentApiIndex % this.apiEndpoints.length];
+                    this.currentApiIndex++;
+                    attempts++;
+                    
+                    if (this.apiCooldowns[api.name] && this.apiCooldowns[api.name] > now) {
+                        continue;
+                    }
+                    
+                    try {
+                        const apiUrl = api.url(tiktokUrl);
+                        const response = await fetch(apiUrl);
+                        
+                        if (response.status === 429) {
+                            const retryAfter = parseInt(response.headers.get('Retry-After')) || 60;
+                            this.apiCooldowns[api.name] = now + (retryAfter * 1000);
+                            continue;
+                        }
+                        
+                        const data = await response.json();
+                        const result = api.parser(data);
+                        
+                        if (result) {
+                            return result;
+                        }
+                    } catch (error) {
+                        console.error(`API ${api.name} failed:`, error);
+                        this.apiCooldowns[api.name] = now + 60000;
+                    }
+                }
+                
+                throw new Error('All APIs are currently unavailable. Please try again later.');
+            }
+        };
+
+        // ================== MAIN FUNCTIONS ==================
+        async function processVideo() {
+            const tiktokUrl = document.getElementById('tiktok-url').value.trim();
+            const resultDiv = document.getElementById('result');
+            const errorDiv = document.getElementById('error');
+            const loadingDiv = document.getElementById('loading');
+            const ipLimitDiv = document.getElementById('ip-limit-message');
+            
+            resultDiv.style.display = 'none';
+            errorDiv.textContent = '';
+            ipLimitDiv.style.display = 'none';
+            document.getElementById('rate-limit-notice').style.display = 'none';
+            
+            if (!tiktokUrl) {
+                errorDiv.textContent = 'Please enter a TikTok URL';
+                return;
+            }
+            
+            if (!tiktokUrl.includes('tiktok.com')) {
+                errorDiv.textContent = 'Please enter a valid TikTok URL';
+                return;
+            }
+            
+            const clientIP = rateLimitManager.getClientIP();
+            const ipLimitResult = rateLimitManager.checkIPLimit(clientIP);
+            
+            if (ipLimitResult instanceof Date) {
+                const resetTime = ipLimitResult.toLocaleTimeString();
+                ipLimitDiv.textContent = `Your IP has reached the download limit. Please try again after ${resetTime}`;
+                ipLimitDiv.style.display = 'block';
+                return;
+            }
+            
+            try {
+                loadingDiv.style.display = 'block';
+                
+                const videoData = await rateLimitManager.getNextAPI(tiktokUrl);
+                
+                if (videoData && videoData.url) {
+                    const videoPreview = document.getElementById('video-preview');
+                    const downloadLink = document.getElementById('download-link');
+                    
+                    videoPreview.src = videoData.url;
+                    downloadLink.href = videoData.url;
+                    downloadLink.download = `tiktok-${Date.now()}.mp4`;
+                    resultDiv.style.display = 'block';
+                } else {
+                    errorDiv.textContent = 'Could not download video. Please try another URL.';
+                }
+            } catch (err) {
+                errorDiv.textContent = err.message;
+                console.error(err);
+            } finally {
+                loadingDiv.style.display = 'none';
+            }
+        }
+
+        // Initialize download button event listener
+        document.getElementById('download-link').addEventListener('click', function(e) {
+            if (!this.href || this.href === '#') {
+                e.preventDefault();
+                alert('Please process a video first');
+            }
+        });
+    </script>
+</body>
+  </html>
